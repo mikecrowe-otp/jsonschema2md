@@ -14,6 +14,7 @@ import argparse
 import io
 import json
 import re
+import os
 import subprocess  # nosec
 import sys
 from collections.abc import Sequence
@@ -103,13 +104,19 @@ class Parser:
                 else:
                     description_line.append(f"Cannot contain {extra_props} properties.")
         if "$ref" in obj:
-            description_line.append(f"Refer to *[{obj['$ref']}](#{quote(obj['$ref'][2:])})*.")
+            dest = obj["$ref"]
+            if dest.endswith(".schema.json"):
+                dest = dest[:-12]
+            elif dest.endswith(".json"):
+                dest = dest[:-5]
+            title = os.path.basename(dest)
+            description_line.append(f"Includes all of *[{title}]({quote(dest)}.md)*.")
         if "default" in obj:
             description_line.append(f"Default: `{json.dumps(obj['default'])}`.")
 
         # Only add start colon if items were added
-        if description_line:
-            description_line.insert(0, ":")
+        # if description_line:
+        #     description_line.insert(0, ":")
 
         return description_line
 
@@ -301,6 +308,11 @@ class Parser:
             for obj_name, obj in schema_object["properties"].items():
                 required = obj_name in schema_object.get("required", [])
                 output_lines.extend(self._parse_object(obj, obj_name, required=required))
+
+        # Add properties
+        if "allOf" in schema_object:
+            output_lines.append("## Properties\n\n")
+            output_lines.extend(self._parse_object(schema_object["allOf"], "Properties", required=False))
 
         # Add definitions / $defs
         for name in ["definitions", "$defs"]:
