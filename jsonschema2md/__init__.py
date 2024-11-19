@@ -105,9 +105,7 @@ class Parser:
                     description_line.append(f"Cannot contain {extra_props} properties.")
         if "$ref" in obj:
             dest = obj["$ref"]
-            if dest.endswith(".schema.json"):
-                dest = dest[:-12]
-            elif dest.endswith(".json"):
+            if dest.endswith(".json"):
                 dest = dest[:-5]
             title = os.path.basename(dest)
             description_line.append(f"Includes all of *[{title}]({quote(dest)}.md)*.")
