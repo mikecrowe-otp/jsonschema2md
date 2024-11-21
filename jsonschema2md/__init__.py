@@ -175,7 +175,7 @@ class Parser:
                     None,
                     name_monospace=False,
                     output_lines=output_lines,
-                    indent_level=indent_level + 2,
+                    indent_level=indent_level + 1,
                 )
             return output_lines
 
