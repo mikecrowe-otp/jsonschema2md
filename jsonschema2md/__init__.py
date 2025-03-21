@@ -13,14 +13,15 @@ except ImportError:
 import argparse
 import io
 import json
-import re
 import os
+import re
 import subprocess  # nosec
 import sys
 from collections.abc import Sequence
 from typing import Optional, Union
 from urllib.parse import quote
 
+import mdformat
 import yaml
 
 __version__ = version("jsonschema2md")
@@ -64,7 +65,9 @@ class Parser:
                 f"`{valid_show_examples_options}`; `{show_examples}` was passed."
             )
 
-    def _construct_description_line(self, obj: dict, add_type: bool = False) -> Sequence[str]:
+    def _construct_description_line(
+        self, obj: dict, add_type: bool = False
+    ) -> Sequence[str]:
         """Construct description line of property, definition, or item."""
         description_line = []
 
@@ -91,7 +94,9 @@ class Parser:
             elif obj["minItems"] == obj["maxItems"]:
                 length_description += f"equal to {obj['minItems']}."
             else:
-                length_description += f"between {obj['minItems']} and {obj['maxItems']} (inclusive)."
+                length_description += (
+                    f"between {obj['minItems']} and {obj['maxItems']} (inclusive)."
+                )
             description_line.append(length_description)
         if "enum" in obj:
             description_line.append(f"Must be one of: `{json.dumps(obj['enum'])}`.")
@@ -118,15 +123,22 @@ class Parser:
 
         return description_line
 
-    def _construct_examples(self, obj: dict, indent_level: int = 0, add_header: bool = True) -> Sequence[str]:
+    def _construct_examples(
+        self, obj: dict, indent_level: int = 0, add_header: bool = True
+    ) -> Sequence[str]:
         def dump_json_with_line_head(obj, line_head, **kwargs):
-            result = [line_head + line for line in io.StringIO(json.dumps(obj, **kwargs)).readlines()]
+            result = [
+                line_head + line
+                for line in io.StringIO(json.dumps(obj, **kwargs)).readlines()
+            ]
             return "".join(result)
 
         def dump_yaml_with_line_head(obj, line_head, **kwargs):
             result = [
                 line_head + line
-                for line in io.StringIO(yaml.dump(obj, sort_keys=False, **kwargs)).readlines()
+                for line in io.StringIO(
+                    yaml.dump(obj, sort_keys=False, **kwargs)
+                ).readlines()
             ]
             return "".join(result).rstrip()
 
@@ -148,6 +160,17 @@ class Parser:
                 )
         return example_lines
 
+    def append_line(self, line: str, output_lines: list[str]):
+        if output_lines:
+            last_indent = len(output_lines[-1]) - len(output_lines[-1].lstrip())
+            indentation = len(line) - len(line.lstrip())
+            if last_indent != indentation and not output_lines[-1].lstrip()[:2] not in [
+                "- ",
+                "* ",
+            ]:
+                output_lines.append("\n")
+        output_lines.append(line)
+
     def _parse_object(
         self,
         obj: Union[dict, list],
@@ -167,7 +190,7 @@ class Parser:
         indentation_items = " " * self.tab_size * (indent_level + 1)
 
         if isinstance(obj, list):
-            output_lines.append(f"{indentation}- **{name}**:\n")
+            self.append_line(f"{indentation}- **{name}**:\n", output_lines)
 
             for element in obj:
                 output_lines = self._parse_object(
@@ -180,7 +203,9 @@ class Parser:
             return output_lines
 
         if not isinstance(obj, dict):
-            raise TypeError(f"Non-object type found in properties list: `{name}: {obj}`.")
+            raise TypeError(
+                f"Non-object type found in properties list: `{name}: {obj}`."
+            )
 
         # Construct full description line
         description_line_base = self._construct_description_line(obj)
@@ -199,10 +224,17 @@ class Parser:
             name_formatted = ""
         else:
             required_str = ", required" if required else ""
-            obj_type = f" *({obj['type']}{optional_format}{required_str})*" if "type" in obj else ""
+            obj_type = (
+                f" *({obj['type']}{optional_format}{required_str})*"
+                if "type" in obj
+                else ""
+            )
             name_formatted = f"**`{name}`**" if name_monospace else f"**{name}**"
-        anchor = f"<a id=\"{quote('/'.join(path))}\"></a>" if path else ""
-        output_lines.append(f"{indentation}- {anchor}{name_formatted}{obj_type}{description_line}\n")
+        anchor = f'<a id="{quote("/".join(path))}"></a>' if path else ""
+        self.append_line(
+            f"{indentation}- {anchor}{name_formatted}{obj_type}{description_line}\n",
+            output_lines,
+        )
 
         # Recursively parse subschemas following schema composition keywords
         schema_composition_keyword_map = {
@@ -212,7 +244,10 @@ class Parser:
         }
         for key, label in schema_composition_keyword_map.items():
             if key in obj:
-                output_lines.append(f"{indentation_items}- **{label}**\n")
+                self.append_line(
+                    f"{indentation_items}- **{label}**\n",
+                    output_lines,
+                )
                 for child_obj in obj[key]:
                     output_lines = self._parse_object(
                         child_obj,
@@ -259,70 +294,94 @@ class Parser:
 
         # Add examples
         if self.show_examples in ["all", "properties"]:
-            output_lines.extend(self._construct_examples(obj, indent_level=indent_level))
+            output_lines.extend(
+                self._construct_examples(obj, indent_level=indent_level)
+            )
 
+        # if output_lines and output_lines[-1] != "\n":
+        #     output_lines.append("\n")
         return output_lines
 
-    def parse_schema(self, schema_object: dict) -> Sequence[str]:
+    def parse_schema(self, schema_object_master: dict) -> Sequence[str]:
         """Parse JSON Schema object to markdown text."""
         output_lines = []
 
         # Add title and description
-        if "title" in schema_object:
-            output_lines.append(f"# {schema_object['title']}\n\n")
+        if "title" in schema_object_master:
+            output_lines.append(f"# {schema_object_master['title']}\n\n")
         else:
             output_lines.append("# JSON Schema\n\n")
-        if "description" in schema_object:
-            output_lines.append(f"*{schema_object['description']}*\n\n")
+
+        if "description" in schema_object_master:
+            output_lines.append(f"*{schema_object_master['description']}*\n\n")
 
         # Add items
-        if "items" in schema_object:
-            output_lines.append("## Items\n\n")
-            output_lines.extend(self._parse_object(schema_object["items"], "Items", name_monospace=False))
+        once = False
+        for schema_object in schema_object_master.get("allOf", [schema_object_master]):
+            if "items" in schema_object:
+                if not once:
+                    output_lines.append("## Items\n\n")
+                    once = True
+                new_lines = self._parse_object(
+                    schema_object["items"], "Items", name_monospace=False
+                )
+                output_lines.extend(new_lines)
 
         # Add additional/unevaluated properties
         for extra_props in ["additional", "unevaluated"]:
             property_name = f"{extra_props}Properties"
             title_ = f"{extra_props.capitalize()} Properties"
-            if property_name in schema_object and isinstance(schema_object[property_name], dict):
+            if property_name in schema_object_master and isinstance(
+                schema_object_master[property_name], dict
+            ):
                 output_lines.append(f"## {title_}\n\n")
-                output_lines.extend(
-                    self._parse_object(
-                        schema_object[property_name],
-                        title_,
-                        name_monospace=False,
-                    )
+                new_lines = self._parse_object(
+                    schema_object_master[property_name],
+                    title_,
+                    name_monospace=False,
                 )
+                output_lines.extend(new_lines)
 
         # Add pattern properties
-        if "patternProperties" in schema_object:
-            output_lines.append("## Pattern Properties\n\n")
-            for obj_name, obj in schema_object["patternProperties"].items():
-                output_lines.extend(self._parse_object(obj, obj_name))
+        once = False
+        for schema_object in schema_object_master.get("allOf", [schema_object_master]):
+            if "patternProperties" in schema_object:
+                if not once:
+                    output_lines.append("## Pattern Properties\n\n")
+                    once = True
+                for obj_name, obj in schema_object["patternProperties"].items():
+                    new_lines = self._parse_object(obj, obj_name)
+                    output_lines.extend(new_lines)
 
         # Add properties
-        if "properties" in schema_object:
-            output_lines.append("## Properties\n\n")
-            for obj_name, obj in schema_object["properties"].items():
-                required = obj_name in schema_object.get("required", [])
-                output_lines.extend(self._parse_object(obj, obj_name, required=required))
-
-        # Add properties
-        if "allOf" in schema_object:
-            output_lines.append("## Properties\n\n")
-            output_lines.extend(self._parse_object(schema_object["allOf"], "Properties", required=False))
+        once = False
+        for schema_object in schema_object_master.get("allOf", [schema_object_master]):
+            if "properties" in schema_object:
+                if not once:
+                    output_lines.append("## Properties\n\n")
+                    once = True
+                for obj_name, obj in schema_object["properties"].items():
+                    required = obj_name in schema_object.get("required", [])
+                    new_lines = self._parse_object(obj, obj_name, required=required)
+                    output_lines.extend(new_lines)
 
         # Add definitions / $defs
         for name in ["definitions", "$defs"]:
-            if name in schema_object:
-                output_lines.append("## Definitions\n\n")
-                for obj_name, obj in schema_object[name].items():
-                    output_lines.extend(self._parse_object(obj, obj_name, path=[name, obj_name]))
+            if name in schema_object_master:
+                for obj_name, obj in schema_object_master[name].items():
+                    new_lines = self._parse_object(obj, obj_name, path=[name, obj_name])
+                    output_lines.extend(new_lines)
 
         # Add examples
-        if "examples" in schema_object and self.show_examples in ["all", "object"]:
+        if "examples" in schema_object_master and self.show_examples in [
+            "all",
+            "object",
+        ]:
             output_lines.append("## Examples\n\n")
-            output_lines.extend(self._construct_examples(schema_object, indent_level=0, add_header=False))
+            new_lines = self._construct_examples(
+                schema_object_master, indent_level=0, add_header=False
+            )
+            output_lines.extend(new_lines)
 
         return output_lines
 
@@ -330,18 +389,26 @@ class Parser:
 def main():
     """Convert JSON Schema to Markdown documentation."""
 
-    argparser = argparse.ArgumentParser("Convert JSON Schema to Markdown documentation.")
-    argparser.add_argument("--version", action="store_true", help="Show version and exit.")
-    argparser.add_argument(
-        "--pre-commit", action="store_true", help="Run as pre-commit hook after the generation."
+    argparser = argparse.ArgumentParser(
+        "Convert JSON Schema to Markdown documentation."
     )
     argparser.add_argument(
-        "--examples-as-yaml", action="store_true", help="Parse examples in YAML-format instead of JSON."
+        "--version", action="store_true", help="Show version and exit."
+    )
+    argparser.add_argument(
+        "--pre-commit",
+        action="store_true",
+        help="Run as pre-commit hook after the generation.",
+    )
+    argparser.add_argument(
+        "--examples-as-yaml",
+        action="store_true",
+        help="Parse examples in YAML-format instead of JSON.",
     )
     argparser.add_argument(
         "--show-examples",
         choices=["all", "properties", "object"],
-        default="all",
+        default="object",
         help="Parse examples for only the main object, only properties, or all.",
     )
     argparser.add_argument("input_json", help="Input JSON file.")
@@ -353,12 +420,16 @@ def main():
         print(__version__)
         sys.exit(0)
 
-    parser = Parser(examples_as_yaml=args.examples_as_yaml, show_examples=args.show_examples)
+    parser = Parser(
+        examples_as_yaml=args.examples_as_yaml, show_examples=args.show_examples
+    )
     with open(args.input_json, encoding="utf-8") as input_json:
         output_md = parser.parse_schema(json.load(input_json))
 
     with open(args.output_markdown, "w", encoding="utf-8") as output_markdown:
-        output_markdown.writelines(output_md)
+        text = "\n".join(output_md)
+        markdown = mdformat.text(text)
+        output_markdown.write(markdown)
 
     if args.pre_commit:
         subprocess.run(  # pylint: disable=subprocess-run-check # nosec
