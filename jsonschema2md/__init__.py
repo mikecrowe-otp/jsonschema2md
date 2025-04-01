@@ -144,7 +144,7 @@ class Parser:
 
         example_lines = []
         if "examples" in obj:
-            example_indentation = " " * self.tab_size * (indent_level + 1)
+            example_indentation = " " * self.tab_size * indent_level
             if add_header:
                 example_lines.append(f"\n{example_indentation}Examples:\n")
             for example in obj["examples"]:
@@ -160,47 +160,47 @@ class Parser:
                 )
         return example_lines
 
-    def append_line(self, line: str, output_lines: list[str]):
-        if output_lines:
-            last_indent = len(output_lines[-1]) - len(output_lines[-1].lstrip())
+    def append_line(self, line: str, new_lines: list[str]):
+        if new_lines:
+            last_indent = len(new_lines[-1]) - len(new_lines[-1].lstrip())
             indentation = len(line) - len(line.lstrip())
-            if last_indent != indentation and not output_lines[-1].lstrip()[:2] not in [
+            if last_indent != indentation and not new_lines[-1].lstrip()[:2] not in [
                 "- ",
                 "* ",
             ]:
-                output_lines.append("\n")
-        output_lines.append(line)
+                new_lines.append("\n")
+        new_lines.append(line)
 
     def _parse_object(
         self,
         obj: Union[dict, list],
         name: Optional[str],
         name_monospace: bool = True,
-        output_lines: Optional[list[str]] = None,
+        parsed_lines: Optional[list[str]] = None,
         indent_level: int = 0,
         path: Optional[list[str]] = None,
         required: bool = False,
     ) -> list[str]:
         """Parse JSON object and its items, definitions, and properties recursively."""
 
-        if not output_lines:
-            output_lines = []
+        if not parsed_lines:
+            parsed_lines = []
 
         indentation = " " * self.tab_size * indent_level
         indentation_items = " " * self.tab_size * (indent_level + 1)
 
         if isinstance(obj, list):
-            self.append_line(f"{indentation}- **{name}**:\n", output_lines)
+            self.append_line(f"{indentation}- **{name}**:\n", parsed_lines)
 
             for element in obj:
-                output_lines = self._parse_object(
+                parsed_lines = self._parse_object(
                     element,
                     None,
                     name_monospace=False,
-                    output_lines=output_lines,
+                    parsed_lines=parsed_lines,
                     indent_level=indent_level + 1,
                 )
-            return output_lines
+            return parsed_lines
 
         if not isinstance(obj, dict):
             raise TypeError(
@@ -233,7 +233,7 @@ class Parser:
         anchor = f'<a id="{quote("/".join(path))}"></a>' if path else ""
         self.append_line(
             f"{indentation}- {anchor}{name_formatted}{obj_type}{description_line}\n",
-            output_lines,
+            parsed_lines,
         )
 
         # Recursively parse subschemas following schema composition keywords
@@ -246,25 +246,25 @@ class Parser:
             if key in obj:
                 self.append_line(
                     f"{indentation_items}- **{label}**\n",
-                    output_lines,
+                    parsed_lines,
                 )
                 for child_obj in obj[key]:
-                    output_lines = self._parse_object(
+                    parsed_lines = self._parse_object(
                         child_obj,
                         None,
                         name_monospace=False,
-                        output_lines=output_lines,
+                        parsed_lines=parsed_lines,
                         indent_level=indent_level + 2,
                     )
 
         # Recursively add items and definitions
         for property_name in ["items", "definitions", "$defs"]:
             if property_name in obj:
-                output_lines = self._parse_object(
+                parsed_lines = self._parse_object(
                     obj[property_name],
                     property_name.capitalize(),
                     name_monospace=False,
-                    output_lines=output_lines,
+                    parsed_lines=parsed_lines,
                     indent_level=indent_level + 1,
                 )
 
@@ -272,11 +272,11 @@ class Parser:
         for extra_props in ["additional", "unevaluated"]:
             property_name = f"{extra_props}Properties"
             if property_name in obj and isinstance(obj[property_name], dict):
-                output_lines = self._parse_object(
+                parsed_lines = self._parse_object(
                     obj[property_name],
                     f"{extra_props.capitalize()} properties",
                     name_monospace=False,
-                    output_lines=output_lines,
+                    parsed_lines=parsed_lines,
                     indent_level=indent_level + 1,
                 )
 
@@ -284,26 +284,36 @@ class Parser:
         for property_name in ["properties", "patternProperties"]:
             if property_name in obj:
                 for property_name, property_obj in obj[property_name].items():
-                    output_lines = self._parse_object(
+                    parsed_lines = self._parse_object(
                         property_obj,
                         property_name,
-                        output_lines=output_lines,
+                        parsed_lines=parsed_lines,
                         indent_level=indent_level + 1,
                         required=property_name in obj.get("required", []),
                     )
 
         # Add examples
         if self.show_examples in ["all", "properties"]:
-            output_lines.extend(
+            parsed_lines.extend(
                 self._construct_examples(obj, indent_level=indent_level)
             )
 
-        # if output_lines and output_lines[-1] != "\n":
-        #     output_lines.append("\n")
-        return output_lines
+        return parsed_lines
 
     def parse_schema(self, schema_object_master: dict) -> Sequence[str]:
         """Parse JSON Schema object to markdown text."""
+
+        def gather_props(obj: dict, prop: str) -> list[dict]:
+            """Gather properties from schema object and allOf's."""
+            res = []
+
+            if prop in obj:
+                res.append(obj[prop])
+            if "allOf" in obj:
+                for sub_obj in obj["allOf"]:
+                    res.extend(gather_props(sub_obj, prop))
+            return res
+
         output_lines = []
 
         # Add title and description
@@ -316,16 +326,13 @@ class Parser:
             output_lines.append(f"*{schema_object_master['description']}*\n\n")
 
         # Add items
-        once = False
-        for schema_object in schema_object_master.get("allOf", [schema_object_master]):
-            if "items" in schema_object:
-                if not once:
-                    output_lines.append("## Items\n\n")
-                    once = True
-                new_lines = self._parse_object(
-                    schema_object["items"], "Items", name_monospace=False
-                )
-                output_lines.extend(new_lines)
+        first = False
+        for schema_object in gather_props(schema_object_master, "items"):
+            if not first:
+                output_lines.append("## Items\n\n")
+                first = True
+            new_lines = self._parse_object(schema_object, "Items", name_monospace=False)
+            output_lines.extend(new_lines)
 
         # Add additional/unevaluated properties
         for extra_props in ["additional", "unevaluated"]:
@@ -343,27 +350,25 @@ class Parser:
                 output_lines.extend(new_lines)
 
         # Add pattern properties
-        once = False
-        for schema_object in schema_object_master.get("allOf", [schema_object_master]):
-            if "patternProperties" in schema_object:
-                if not once:
-                    output_lines.append("## Pattern Properties\n\n")
-                    once = True
-                for obj_name, obj in schema_object["patternProperties"].items():
-                    new_lines = self._parse_object(obj, obj_name)
-                    output_lines.extend(new_lines)
+        first = False
+        for schema_object in gather_props(schema_object_master, "patternProperties"):
+            if not first:
+                output_lines.append("## Pattern Properties\n\n")
+                first = True
+            for obj_name, obj in schema_object.items():
+                new_lines = self._parse_object(obj, obj_name)
+                output_lines.extend(new_lines)
 
         # Add properties
-        once = False
-        for schema_object in schema_object_master.get("allOf", [schema_object_master]):
-            if "properties" in schema_object:
-                if not once:
-                    output_lines.append("## Properties\n\n")
-                    once = True
-                for obj_name, obj in schema_object["properties"].items():
-                    required = obj_name in schema_object.get("required", [])
-                    new_lines = self._parse_object(obj, obj_name, required=required)
-                    output_lines.extend(new_lines)
+        first = True
+        for schema_object in gather_props(schema_object_master, "properties"):
+            if first:
+                output_lines.append("## Properties\n\n")
+                first = False
+            for obj_name, obj in schema_object.items():
+                required = obj_name in schema_object.get("required", [])
+                new_lines = self._parse_object(obj, obj_name, required=required)
+                output_lines.extend(new_lines)
 
         # Add definitions / $defs
         for name in ["definitions", "$defs"]:
